@@ -1,5 +1,8 @@
 
-import type { FrameFeatures, Region } from "./analyzeFrame";
+import type {
+  FrameFeatures,
+  Region,
+} from "./analyzeFrame";
 
 export type MusicalStep = {
   note: string;
@@ -16,198 +19,263 @@ export type MusicalMapping = {
   musicalKey: string;
 };
 
-const clamp = (value: number) =>
+const clamp = (value: number): number =>
   Math.max(0, Math.min(1, value));
 
-// C major pentatonic scale.
-// All melody notes belong to the same musical family.
-const SCALE = [
-  "C4",
-  "D4",
-  "E4",
-  "G4",
-  "A4",
-  "C5",
-  "D5",
-  "E5",
-  "G5",
+const MELODY = [
+  "C4", "D4", "E4", "G4", "A4",
+  "C5", "D5", "E5", "G5",
 ];
 
-// Harmonic progression stays coherent across the image.
-const CHORDS = [
+type Harmony = {
+  chord: string[];
+  bass: string;
+};
+
+/*
+ * Different harmonic families for different
+ * characteristics of the image.
+ *
+ * These are artistic interpretations,
+ * not temperature measurements.
+ */
+
+const COOL_HARMONIES: Harmony[] = [
   {
-    notes: ["C3", "E3", "G3"],
+    chord: ["A2", "C3", "E3", "G3"],
+    bass: "A1",
+  },
+  {
+    chord: ["D3", "F3", "A3", "C4"],
+    bass: "D2",
+  },
+  {
+    chord: ["E3", "G3", "B3", "D4"],
+    bass: "E2",
+  },
+];
+
+const BALANCED_HARMONIES: Harmony[] = [
+  {
+    chord: ["C3", "E3", "G3", "B3"],
     bass: "C2",
   },
   {
-    notes: ["A2", "C3", "E3"],
-    bass: "A2",
-  },
-  {
-    notes: ["F3", "A3", "C4"],
+    chord: ["F3", "A3", "C4", "E4"],
     bass: "F2",
   },
   {
-    notes: ["G2", "B2", "D3"],
+    chord: ["G2", "C3", "D3", "G3"],
     bass: "G2",
   },
 ];
 
-// Calculate a feature score from actual image analysis.
-function getIntensity(region: Region): number {
-  return clamp(
-    region.brightness * 0.55 +
-    region.warmth * 0.35 +
-    region.contrast * 0.10
+const WARM_HARMONIES: Harmony[] = [
+  {
+    chord: ["E3", "G3", "B3", "D4"],
+    bass: "E2",
+  },
+  {
+    chord: ["G3", "B3", "D4", "F4"],
+    bass: "G2",
+  },
+  {
+    chord: ["A3", "C4", "E4", "G4"],
+    bass: "A2",
+  },
+];
+
+/*
+ * Create one harmonic mood for each group
+ * of three image regions.
+ *
+ * Unlike the old version, chord selection
+ * depends on actual image features.
+ */
+
+function chooseHarmony(
+  regions: Region[],
+  startIndex: number
+): Harmony {
+  const group = regions.slice(
+    startIndex,
+    startIndex + 3
   );
+
+  const average = (key: keyof Region) =>
+    group.reduce(
+      (sum, region) => sum + region[key],
+      0
+    ) / Math.max(1, group.length);
+
+  const warmth = average("warmth");
+  const coolness = average("coolness");
+  const brightness = average("brightness");
+  const contrast = average("contrast");
+
+  let harmonies: Harmony[];
+
+  if (coolness > warmth + 0.08) {
+    harmonies = COOL_HARMONIES;
+  } else if (warmth > coolness + 0.08) {
+    harmonies = WARM_HARMONIES;
+  } else {
+    harmonies = BALANCED_HARMONIES;
+  }
+
+  /*
+   * Choose a chord within that family
+   * using measured image properties.
+   */
+  const score = clamp(
+    brightness * 0.50 +
+    contrast * 0.30 +
+    warmth * 0.20
+  );
+
+  const index = Math.min(
+    harmonies.length - 1,
+    Math.floor(score * harmonies.length)
+  );
+
+  return harmonies[index];
 }
 
-// Determine how different neighboring regions are.
-function getDifference(
-  current: Region,
-  previous: Region
-): number {
-  return clamp(
-    Math.abs(current.brightness - previous.brightness) *
-      0.30 +
-    Math.abs(current.warmth - previous.warmth) *
-      0.35 +
-    Math.abs(current.coolness - previous.coolness) *
-      0.25 +
-    Math.abs(current.contrast - previous.contrast) *
-      0.10
-  );
-}
+/*
+ * Convert a region into a melodic note.
+ */
 
-// Select melody notes using image intensity and
-// local color changes, instead of intensity alone.
-function selectNote(
+function chooseMelody(
   region: Region,
   previous: Region | null,
   index: number
 ): string {
-  const intensity = getIntensity(region);
+  let score = clamp(
+    region.brightness * 0.45 +
+    region.warmth * 0.35 +
+    region.contrast * 0.20
+  );
 
-  // Base pitch derived from image features.
-  let noteIndex = Math.floor(intensity * SCALE.length);
+  let noteIndex = Math.floor(
+    score * MELODY.length
+  );
 
-  // Strong warm regions move the melody upward.
-  if (region.warmth > 0.55) {
+  if (region.warmth > 0.45) {
     noteIndex += 2;
-  } else if (region.warmth > 0.30) {
-    noteIndex += 1;
   }
 
-  // Cool regions favor the lower register.
-  if (region.coolness > 0.45) {
+  if (region.coolness > 0.40) {
     noteIndex -= 2;
-  } else if (region.coolness > 0.25) {
-    noteIndex -= 1;
   }
 
-  // Neighboring differences introduce melodic movement.
   if (previous) {
-    const difference = getDifference(region, previous);
+    const colorChange =
+      Math.abs(
+        region.warmth - previous.warmth
+      ) +
+      Math.abs(
+        region.coolness - previous.coolness
+      );
 
-    if (difference > 0.25) {
-      noteIndex += index % 2 === 0 ? 2 : -2;
-    } else if (difference > 0.12) {
-      noteIndex += index % 2 === 0 ? 1 : -1;
+    if (colorChange > 0.30) {
+      noteIndex +=
+        index % 2 === 0 ? 2 : -2;
     }
-  }
-
-  // Small contrast-based variation.
-  // This is deterministic, not random.
-  if (region.contrast > 0.32 && index % 3 === 2) {
-    noteIndex += 1;
   }
 
   noteIndex = Math.max(
     0,
-    Math.min(SCALE.length - 1, noteIndex)
+    Math.min(
+      MELODY.length - 1,
+      noteIndex
+    )
   );
 
-  return SCALE[noteIndex];
+  return MELODY[noteIndex];
 }
 
-// Generate noticeably different note lengths.
-// Stable visual regions create spacious phrases;
-// changing regions create faster movement.
-function getDuration(
-  region: Region,
+/*
+ * Calculate differences between regions.
+ */
+
+function regionDifference(
+  current: Region,
   previous: Region | null
 ): number {
-  if (!previous) {
-    return 650;
-  }
+  if (!previous) return 0;
 
-  const difference = getDifference(region, previous);
+  return clamp(
+    Math.abs(
+      current.brightness -
+      previous.brightness
+    ) * 0.30 +
 
-  if (difference > 0.35) {
-    return 280;
-  }
+    Math.abs(
+      current.warmth -
+      previous.warmth
+    ) * 0.35 +
 
-  if (difference > 0.22) {
-    return 360;
-  }
+    Math.abs(
+      current.coolness -
+      previous.coolness
+    ) * 0.25 +
 
-  if (difference > 0.12) {
-    return 470;
-  }
-
-  if (region.contrast > 0.25) {
-    return 580;
-  }
-
-  return 760;
-}
-
-// Image-driven timbre:
-// More warm-colored pixels open the audio filter.
-// Cooler, darker regions produce a softer texture.
-function getFilterFrequency(region: Region): number {
-  const frequency =
-    550 +
-    region.warmth * 2400 +
-    region.brightness * 1200 +
-    region.contrast * 450 -
-    region.coolness * 350;
-
-  return Math.round(
-    Math.max(450, Math.min(4300, frequency))
+    Math.abs(
+      current.contrast -
+      previous.contrast
+    ) * 0.10
   );
 }
 
-// Accent notes occur when neighboring regions
-// differ significantly or contain strong contrast.
-function shouldAccent(
-  region: Region,
-  previous: Region | null,
-  index: number
-): boolean {
-  if (!previous) return false;
-
-  const difference = getDifference(region, previous);
-
-  return (
-    difference > 0.16 ||
-    (region.contrast > 0.30 && index % 2 === 0)
-  );
-}
-
-/**
- * Converts visual-frame features into a musical sequence.
- *
- * Input:
- *   Actual Canvas 2D measurements.
- *
- * Output:
- *   Melody, harmony, bass, note durations,
- *   timbre and rhythmic accents.
- *
- * This is visual-feature sonification.
- * It does not claim to measure temperature directly.
+/*
+ * Stable regions sound slower.
+ * Rapidly changing regions sound faster.
  */
+
+function chooseDuration(
+  difference: number,
+  contrast: number
+): number {
+  const activity = clamp(
+    difference * 1.6 +
+    contrast * 0.35
+  );
+
+  if (activity > 0.60) return 280;
+  if (activity > 0.40) return 390;
+  if (activity > 0.25) return 510;
+  if (activity > 0.12) return 650;
+
+  return 850;
+}
+
+/*
+ * Image characteristics also change
+ * the brightness of the audio timbre.
+ */
+
+function chooseFilter(
+  region: Region
+): number {
+  return Math.round(
+    Math.max(
+      500,
+      Math.min(
+        4400,
+        700 +
+        region.warmth * 2200 +
+        region.brightness * 1200 +
+        region.contrast * 600 -
+        region.coolness * 400
+      )
+    )
+  );
+}
+
+/*
+ * Main sonification mapping.
+ */
+
 export function mapMusic(
   features: FrameFeatures
 ): MusicalMapping {
@@ -216,53 +284,72 @@ export function mapMusic(
   if (!regions || regions.length === 0) {
     return {
       steps: [],
-      musicalKey: "C major pentatonic / ambient",
+      musicalKey: "Image-driven ambient harmony",
     };
   }
 
-  const steps: MusicalStep[] = regions.map(
-    (region, index) => {
+  const steps: MusicalStep[] =
+    regions.map((region, index) => {
       const previous =
-        index > 0 ? regions[index - 1] : null;
+        index > 0
+          ? regions[index - 1]
+          : null;
 
-      const intensity = getIntensity(region);
-
-      // Four three-step harmonic phrases.
-      // The progression stays musical while
-      // the image determines the changing melody.
-      const chordIndex = Math.min(
-        CHORDS.length - 1,
-        Math.floor(
-          (index / regions.length) * CHORDS.length
-        )
+      const difference = regionDifference(
+        region,
+        previous
       );
 
-      const harmony = CHORDS[chordIndex];
+      /*
+       * The existing Tone.js player changes
+       * chords every three regions.
+       *
+       * All three steps in one phrase share
+       * a chord derived from their image data.
+       */
+      const phraseStart =
+        Math.floor(index / 3) * 3;
+
+      const harmony = chooseHarmony(
+        regions,
+        phraseStart
+      );
+
+      const intensity = clamp(
+        region.brightness * 0.40 +
+        region.warmth * 0.35 +
+        region.contrast * 0.25
+      );
 
       return {
-        note: selectNote(region, previous, index),
-
-        chord: harmony.notes,
-
-        bass: harmony.bass,
-
-        durationMs: getDuration(region, previous),
-
-        filterHz: getFilterFrequency(region),
-
-        accent: shouldAccent(
+        note: chooseMelody(
           region,
           previous,
           index
         ),
 
+        chord: harmony.chord,
+
+        bass: harmony.bass,
+
+        durationMs: chooseDuration(
+          difference,
+          region.contrast
+        ),
+
+        filterHz: chooseFilter(region),
+
+        accent:
+          difference > 0.14 ||
+          region.contrast > 0.35,
+
         intensity,
       };
-    }
-  );
+    });
 
   return {
     steps,
-    musicalKey: "C major pentatonic / ambient",
+    musicalKey:
+      "Image-driven ambient harmony",
   };
 }
